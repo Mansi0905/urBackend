@@ -791,27 +791,85 @@ module.exports.getData = async (req, res) => {
         }
 
         const connection = await getConnection(projectId);
-        const model = getCompiledModel(connection, collectionConfig, projectId, project.resources.db.isExternal);
+        const model = getCompiledModel(
+            connection,
+            collectionConfig,
+            projectId,
+            project.resources.db.isExternal,
+        );
 
-        // const collectionsList = await mongoose.connection.db.listCollections({ name: finalCollectionName }).toArray();
+        const baseQuery = model.find();
 
-        const query = model.find();
+        // Strip password from users collection
         if (collectionName === 'users') {
-            query.select('-password');
+            baseQuery.select('-password');
         }
 
-        const features = new QueryEngine(query, req.query)
+        // Handle ?count=true — return document count only
+        if (req.query.count === 'true') {
+            const countEngine = new QueryEngine(model.find(), req.query);
+            const count = await countEngine.filter().query.countDocuments();
+            return res.status(200).json({
+                success: true,
+                data: { count },
+                message: "Count fetched successfully.",
+            });
+        }
+
+        const features = new QueryEngine(baseQuery, req.query)
             .filter()
             .sort()
-            .paginate();
+            .limitFields()   // fixes: ?fields= and ?meta=false now work
+            .populate();     // fixes: ?populate= and ?expand= now work
+
+        // Get total before paginating
+        const total = await features.count();
+
+        // Cursor-based pagination if ?cursor= is provided, otherwise offset-based
+        const useCursor = !!req.query.cursor;
+        if (useCursor) {
+            features.cursorPaginate();
+        } else {
+            features.paginate();
+        }
 
         const data = await features.query.lean();
 
-        res.json(data);
+        // Cursor: slice to limit and generate next cursor token
+        let items = data;
+        let nextCursor = null;
+        if (useCursor) {
+            const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
+            features.generateNextCursor(data, limit);
+            items = data.slice(0, limit);
+            nextCursor = features.nextCursor;
+        }
+
+        const responseMeta = useCursor
+            ? {
+                total,
+                cursor: req.query.cursor || null,
+                nextCursor,
+                limit: Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 100)),
+              }
+            : {
+                total,
+                page: parseInt(req.query.page, 10) || 1,
+                limit: Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 100)),
+              };
+
+        res.json({
+            success: true,
+            data: {
+                items,
+                ...responseMeta,
+            },
+            message: "Data fetched successfully.",
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
-}
+};
 
 module.exports.deleteCollection = async (req, res) => {
   try {
