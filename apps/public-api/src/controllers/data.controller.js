@@ -195,7 +195,26 @@ module.exports.getAllData = async (req, res) => {
         const { collectionName } = req.params;
         const { project, rlsFilter, query } = req;
         
-        const model = await getCompiledModel(project, collectionName);
+        // Get the collection config first
+        const collectionConfig = project.collections.find(
+            (c) => c.name === collectionName,
+        );
+        
+        if (!collectionConfig) {
+            return res.status(404).json({
+                success: false,
+                data: {},
+                message: "Collection not found",
+            });
+        }
+        
+        const connection = await getConnection(project._id);
+        const model = getCompiledModel(
+            connection,
+            collectionConfig,
+            project._id,
+            project.resources.db.isExternal,
+        );
         
         // Create QueryEngine instance with the query
         const engine = new QueryEngine(query);
