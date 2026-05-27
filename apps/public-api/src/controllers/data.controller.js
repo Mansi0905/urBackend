@@ -191,83 +191,86 @@ module.exports.insertData = async (req, res) => {
 
 // GET ALL DATA
 module.exports.getAllData = async (req, res) => {
-    try {
-        const { collectionName } = req.params;
-        const { project, rlsFilter, query } = req;
-        
-        // Get the collection config first
-        const collectionConfig = project.collections.find(
-            (c) => c.name === collectionName,
-        );
-        
-        if (!collectionConfig) {
-            return res.status(404).json({
-                success: false,
-                data: {},
-                message: "Collection not found",
-            });
-        }
-        
-        const connection = await getConnection(project._id);
-        const model = getCompiledModel(
-            connection,
-            collectionConfig,
-            project._id,
-            project.resources.db.isExternal,
-        );
-        
-        // Create QueryEngine instance with the query
-        const engine = new QueryEngine(query);
-        
-        // Apply filters
-        let result = engine.filter();
-        result = result.sort();
-        
-        // Apply populate if provided in query
-        if (query.populate) {
-            const populateFields = Array.isArray(query.populate) 
-                ? query.populate 
-                : query.populate.split(',').map(p => p.trim());
-            
-            populateFields.forEach(field => {
-                result = result.populate(field);
-            });
-        }
-        
-        result = result.paginate();
-        
-        // Get the MongoDB query and apply RLS filter
-        const mongoQuery = model.find();
-        if (Object.keys(rlsFilter).length > 0) {
-            mongoQuery.and([rlsFilter]);
-        }
-        
-        const docs = await mongoQuery.lean();
-        const count = await engine.count();
-        
-        return res.status(200).json({
-            success: true,
-            data: docs,
-            count,
-        });
-    } catch (error) {
-        // Handle QueryEngine validation errors with statusCode
-        if (error.statusCode && error.statusCode === 400) {
-            return res.status(400).json({
-                success: false,
-                data: {},
-                message: error.message,
-            });
-        }
-        
-        // Handle other errors
-        console.error('getAllData error:', error);
-        return res.status(500).json({
-            success: false,
-            data: {},
-            message: 'Internal server error',
-        });
+  try {
+    const { collectionName } = req.params;
+    const { project, rlsFilter, query } = req;
+
+    const collectionConfig = project.collections.find(
+      (c) => c.name === collectionName,
+    );
+
+    if (!collectionConfig) {
+      return res.status(404).json({
+        success: false,
+        data: {},
+        message: "Collection not found",
+      });
     }
+
+    const connection = await getConnection(project._id);
+    const Model = getCompiledModel(
+      connection,
+      collectionConfig,
+      project._id,
+      project.resources.db.isExternal,
+    );
+
+    try {
+      // Create QueryEngine instance with the query
+      const engine = new QueryEngine(query);
+      
+      // Apply filters, sort, populate, paginate through the engine
+      let result = engine.filter();
+      result = result.sort();
+      
+      // Apply populate if provided in query
+      if (query.populate) {
+        const populateFields = Array.isArray(query.populate) 
+          ? query.populate 
+          : query.populate.split(',').map(p => p.trim());
+        
+        populateFields.forEach(field => {
+          result = result.populate(field);
+        });
+      }
+      
+      result = result.paginate();
+    } catch (error) {
+      // Handle QueryEngine validation errors with statusCode
+      if (error.statusCode && error.statusCode === 400) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          message: error.message,
+        });
+      }
+      throw error;
+    }
+
+    // Get the MongoDB query and apply RLS filter
+    const mongoQuery = Model.find();
+    if (Object.keys(rlsFilter).length > 0) {
+      mongoQuery.and([rlsFilter]);
+    }
+
+    const docs = await mongoQuery.lean();
+    const count = await engine.count();
+
+    return res.status(200).json({
+      success: true,
+      data: docs,
+      count,
+    });
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'test') {
+      console.error('getAllData error:', error);
+    }
+    return res.status(500).json({
+      success: false,
+      data: {},
+      message: error.message || 'Internal server error',
+    });
+  }
 };
 
 // GET SINGLE DOC
