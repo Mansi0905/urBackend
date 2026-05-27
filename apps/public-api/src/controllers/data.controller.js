@@ -190,123 +190,65 @@ module.exports.insertData = async (req, res) => {
 };
 
 // GET ALL DATA
-module.exports.getAllData = async (req, res) => {
-  try {
-    let start;
-    if (isDebug) start = performance.now();
-    const { collectionName } = req.params;
-    const project = req.project;
-
-    const collectionConfig = project.collections.find(
-      (c) => c.name === collectionName,
-    );
-    if (!collectionConfig)
-      return res.status(404).json({ error: "Collection not found" });
-
-    const connection = await getConnection(project._id);
-    const Model = getCompiledModel(
-      connection,
-      collectionConfig,
-      project._id,
-      project.resources.db.isExternal,
-    );
-
-    const baseFilter = req.rlsFilter && typeof req.rlsFilter === 'object' ? req.rlsFilter : {};
-
-    if (req.query.count === 'true') {
-      const countEngine = new QueryEngine(Model.find(), req.query);
-      const mongoFilter = countEngine._buildMongoQuery(true);
-      const mergedFilter = Object.keys(baseFilter).length > 0
-        ? { $and: [mongoFilter, baseFilter] }
-        : mongoFilter;
-
-      const countQuery = Model.countDocuments(mergedFilter);
-
-      if (countEngine.hasRegexFilter && countQuery && typeof countQuery.maxTimeMS === 'function') {
-        countQuery.maxTimeMS(QueryEngine.REGEX_MAX_TIME_MS);
-      }
-
-      const count = await countQuery;
-
-      return res.status(200).json({
-        success: true,
-        data: { count },
-        message: "Count fetched successfully.",
-      });
-    }
-
-    const features = new QueryEngine(Model.find(), req.query).filter();
-
-    if (Object.keys(baseFilter).length > 0) {
-      features.query = features.query.and([baseFilter]);
-    }
-
-   features.sort().limitFields().populate();
-
-    const total = await features.count();
-
-    // Use cursor-based pagination if cursor parameter is provided, otherwise use offset-based
-    const useCursor = !!req.query.cursor;
-    if (useCursor) {
-      features.cursorPaginate();
-    } else {
-      features.paginate();
-    }
-
-    const data = await features.query.lean();
-
-    // Handle cursor pagination: slice to actual limit and generate next cursor
-    let items = data;
-    let nextCursor = null;
-    if (useCursor) {
-      const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
-      features.generateNextCursor(data, limit);
-      items = data.slice(0, limit);
-      nextCursor = features.nextCursor;
-    }
-
-    if (isDebug) console.log(`[DEBUG] getall took ${(performance.now() - start).toFixed(2)}ms`);
-
-    const responseMeta = useCursor
-      ? {
-          total,
-          cursor: req.query.cursor || null,
-          nextCursor,
-          limit: Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 100)),
+const getAllData = async (req, res) => {
+    try {
+        const { collectionName } = req.params;
+        const { project, rlsFilter, query } = req;
+        
+        const model = await getCompiledModel(project, collectionName);
+        
+        // Create QueryEngine instance with the query
+        const engine = new QueryEngine(query);
+        
+        // Apply filters
+        let result = engine.filter();
+        result = result.sort();
+        
+        // Apply populate if provided in query
+        if (query.populate) {
+            const populateFields = Array.isArray(query.populate) 
+                ? query.populate 
+                : query.populate.split(',').map(p => p.trim());
+            
+            populateFields.forEach(field => {
+                result = result.populate(field);
+            });
         }
-      : {
-          total,
-          page: parseInt(req.query.page, 10) || 1,
-          limit: Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 100)),
-        };
-
-    res.json({
-      success: true,
-      data: {
-        items,
-        ...responseMeta,
-      },
-      message: "Data fetched successfully",
-    });
-  } catch (err) {
-    if (process.env.NODE_ENV !== 'test') {
-      console.error(err);
+        
+        result = result.paginate();
+        
+        // Get the MongoDB query and apply RLS filter
+        const mongoQuery = model.find();
+        if (Object.keys(rlsFilter).length > 0) {
+            mongoQuery.and([rlsFilter]);
+        }
+        
+        const docs = await mongoQuery.lean();
+        const count = await engine.count();
+        
+        return res.status(200).json({
+            success: true,
+            data: docs,
+            count,
+        });
+    } catch (error) {
+        // Handle QueryEngine validation errors with statusCode
+        if (error.statusCode && error.statusCode === 400) {
+            return res.status(400).json({
+                success: false,
+                data: {},
+                message: error.message,
+            });
+        }
+        
+        // Handle other errors
+        console.error('getAllData error:', error);
+        return res.status(500).json({
+            success: false,
+            data: {},
+            message: 'Internal server error',
+        });
     }
-
-    if (err && (err.statusCode === 400 || err.name === 'QueryFilterError')) {
-      return res.status(400).json({
-        success: false,
-        data: {},
-        message: err.message || "Invalid query filter.",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      data: {},
-      message: "Failed to fetch data.",
-    });
-  }
 };
 
 // GET SINGLE DOC
