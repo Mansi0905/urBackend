@@ -190,7 +190,7 @@ module.exports.insertData = async (req, res) => {
 };
 
 // GET ALL DATA
-const getAllData = async (req, res) => {
+module.exports.getAllData = async (req, res) => {
     try {
         const { collectionName } = req.params;
         const { project, rlsFilter, query } = req;
