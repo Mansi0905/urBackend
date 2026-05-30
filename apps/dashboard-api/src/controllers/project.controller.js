@@ -420,8 +420,7 @@ module.exports.getSingleProject = async (req, res) => {
           "+resendApiKey.iv " +
           "+resendApiKey.tag",
       );
-      if (!project)
-        return res.status(404).json({ error: "Project not found." });
+      if (!project) return res.status(404).json({ success: false, data: {}, message: "Project not found." });
       projectObj = project.toObject();
       await setProjectById(req.params.projectId, projectObj);
     }
@@ -960,10 +959,8 @@ module.exports.insertData = async (req, res) => {
       (c) => c.name === collectionName,
     );
     if (!collectionConfig) {
-      return res
-        .status(404)
-        .json({ error: "Collection configuration not found." });
-    }
+    return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
+}
 
     let docSize = 0;
     if (!project.resources.db.isExternal) {
