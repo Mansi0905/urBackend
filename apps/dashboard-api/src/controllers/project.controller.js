@@ -787,12 +787,13 @@ module.exports.getData = async (req, res) => {
     try {
         const { projectId, collectionName } = req.params;
         const project = await Project.findOne({ _id: projectId, owner: req.user._id });
-        if (!project) return res.status(404).json({ success: false, data: {}, message: "Project not found." });
+       if (!project) return res.status(404).json({ success: false, data: {}, message: "Project not found." });
+
 
 
         const collectionConfig = project.collections.find(c => c.name === collectionName);
         if (!collectionConfig) {
-    return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
+return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
 }
 
         const connection = await getConnection(projectId);
@@ -881,7 +882,7 @@ const features = new QueryEngine(baseQuery, safeQuery)
             message: "Data fetched successfully.",
         });
     } catch (err) {
-    if (err && (err.statusCode === 400 || err.name === 'QueryFilterError')) {
+    if (err?.statusCode === 400 || err?.name === 'QueryFilterError') {
         return res.status(400).json({ success: false, data: {}, message: err.message || "Invalid query filter." });
     }
     return res.status(500).json({ success: false, data: {}, message: "Failed to fetch data." });
