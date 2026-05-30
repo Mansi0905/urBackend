@@ -188,8 +188,7 @@ module.exports.insertData = async (req, res) => {
   return next(new AppError("Failed to insert bulk data", 500));
 }
 };
-
-// GET ALL DATA
+ 
 // GET ALL DATA
 module.exports.getAllData = async (req, res) => {
   try {

@@ -342,30 +342,25 @@ module.exports.getAllProject = async (req, res) => {
   { $match: { projectId: { $in: projectIds } } },
   { $sort: { timestamp: -1 } },
   {
-    $group: {
-      _id: "$projectId",
-      logs: { $push: { status: "$status" } }
-    }
-  },
-  {
-    $project: {
-      logs: { $slice: ["$logs", 100] }// cap to last 100 logs per project
-    }
-  },
-  {
-    $project: {
-      errorCount: {
-        $size: {
-          $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } }
-        }
-      },
-      successCount: {
-        $size: {
-          $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
-        }
+  $group: {
+    _id: "$projectId",
+    logs: { $topN: { n: 100, sortBy: { timestamp: -1 }, output: { status: "$status" } } }
+  }
+},
+{
+  $project: {
+    errorCount: {
+      $size: {
+        $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } } // cap to last 100 logs per project
+      }
+    },
+    successCount: {
+      $size: {
+        $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
       }
     }
   }
+}
 ]);
 
     const logsMap = recentLogs.reduce((acc, log) => {
@@ -834,8 +829,8 @@ if (collectionName === 'users' && safeQuery.fields) {
 const features = new QueryEngine(baseQuery, safeQuery)
     .filter()
     .sort()
-    .limitFields()
-    .populate();   // fixes: ?populate= and ?expand= now work
+    .populate()
+    .limitFields();   // fixes: ?populate= and ?expand= now work
 
         // Get total before paginating
         const total = await features.count();
