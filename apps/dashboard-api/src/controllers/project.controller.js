@@ -144,6 +144,13 @@ const getDefaultRlsForCollection = (collectionName, schema = []) => {
 
 const SOCIAL_PROVIDER_KEYS = ["github", "google"];
 
+/**
+ * Sanitizes authProviders from a project document for safe API responses.
+ * Strips clientSecret fields and replaces them with a boolean hasClientSecret flag.
+ * @param {Object} authProviders - Raw authProviders from the project document
+ * @returns {Object} Sanitized providers keyed by provider name
+ */
+
 const sanitizeAuthProviders = (authProviders = {}) => {
   return SOCIAL_PROVIDER_KEYS.reduce((acc, provider) => {
     const config = authProviders?.[provider] || {};
@@ -342,7 +349,7 @@ module.exports.getAllProject = async (req, res) => {
   },
   {
     $project: {
-      logs: { $slice: ["$logs", 100] }
+      logs: { $slice: ["$logs", 100] }// cap to last 100 logs per project
     }
   },
   {
@@ -431,7 +438,7 @@ module.exports.getSingleProject = async (req, res) => {
 
 module.exports.regenerateApiKey = async (req, res) => {
   try {
-    const { keyType } = req.body;
+    const { keyType } = req.body; // 'publishable' or 'secret'
 
     if (keyType !== "publishable" && keyType !== "secret") {
       return res
@@ -815,11 +822,20 @@ module.exports.getData = async (req, res) => {
             });
         }
 
-        const features = new QueryEngine(baseQuery, req.query)
-            .filter()
-            .sort()
-            .limitFields()   // fixes: ?fields= and ?meta=false now work
-            .populate();     // fixes: ?populate= and ?expand= now work
+         // Strip password from fields query param for users collection
+const safeQuery = { ...req.query };
+if (collectionName === 'users' && safeQuery.fields) {
+    safeQuery.fields = safeQuery.fields
+        .split(',')
+        .filter(f => f.trim().toLowerCase() !== 'password')
+        .join(',');
+}
+
+const features = new QueryEngine(baseQuery, safeQuery)
+    .filter()
+    .sort()
+    .limitFields()
+    .populate();   // fixes: ?populate= and ?expand= now work
 
         // Get total before paginating
         const total = await features.count();

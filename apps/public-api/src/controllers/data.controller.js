@@ -248,7 +248,7 @@ module.exports.getAllData = async (req, res) => {
       features.query = features.query.and([baseFilter]);
     }
 
-    features.sort().limitFields().populate();
+   features.sort().populate().limitFields();
 
     const total = await features.count();
 
