@@ -15,6 +15,7 @@ const {
     deleteCollection,
     getData,
     deleteRow,
+    recoverRow,
     insertData,
     editRow,
     listFiles,
@@ -49,6 +50,7 @@ const {
 
 const { createAdminUser, resetPassword, getUserDetails, updateAdminUser, listUserSessions, revokeUserSession } = require('../controllers/userAuth.controller');
 
+const exportController = require('../controllers/dbExport.controller');
 
 // POST REQ FOR CREATE PROJECT
 router.post('/', authMiddleware, verifyEmail, planEnforcement.checkProjectLimit, createProject);
@@ -66,6 +68,9 @@ router.get('/:projectId/collections/:collectionName/data', authMiddleware, getDa
 
 // DELETE REQ FOR ROW
 router.delete('/:projectId/collections/:collectionName/data/:id', authMiddleware, deleteRow);
+
+// PATCH REQ FOR RECOVER ROW
+router.patch('/:projectId/collections/:collectionName/data/:id/recover', authMiddleware, recoverRow);
 
 // PATCH REQ FOR EDIT ROW
 router.patch('/:projectId/collections/:collectionName/data/:id', authMiddleware, editRow);
@@ -147,5 +152,8 @@ router.put('/:projectId/admin/users/:userId', authMiddleware, loadProjectForAdmi
 // SESSION MANAGEMENT (Admin)
 router.get('/:projectId/admin/users/:userId/sessions', authMiddleware, loadProjectForAdmin, checkAuthEnabled, listUserSessions);
 router.delete('/:projectId/admin/users/:userId/sessions/:tokenId', authMiddleware, loadProjectForAdmin, checkAuthEnabled, revokeUserSession);
+
+// POST req for DB EXPORT
+router.post('/:projectId/collections/:collectionName/export', authMiddleware, exportController.dbExportHandler);
 
 module.exports = router;
