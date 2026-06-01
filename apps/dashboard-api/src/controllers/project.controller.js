@@ -338,29 +338,29 @@ module.exports.getAllProject = async (req, res) => {
       .lean();
 
     const projectIds = projects.map(p => p._id);
-    const recentLogs = await Log.aggregate([
+   const recentLogs = await Log.aggregate([
   { $match: { projectId: { $in: projectIds } } },
   { $sort: { timestamp: -1 } },
   {
-  $group: {
-    _id: "$projectId",
-    logs: { $topN: { n: 100, sortBy: { timestamp: -1 }, output: { status: "$status" } } }
-  }
-},
-{
-  $project: {
-    errorCount: {
-      $size: {
-        $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } } // cap to last 100 logs per project
-      }
-    },
-    successCount: {
-      $size: {
-        $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
+    $group: {
+      _id: "$projectId",
+      logs: { $topN: { n: 100, sortBy: { timestamp: -1 }, output: { status: "$status" } } }
+    }
+  },
+  {
+    $project: {
+      errorCount: {
+        $size: {
+          $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } }
+        }
+      },
+      successCount: {
+        $size: {
+          $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
+        }
       }
     }
   }
-}
 ]);
 
     const logsMap = recentLogs.reduce((acc, log) => {
