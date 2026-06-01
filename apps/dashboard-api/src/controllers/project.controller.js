@@ -781,8 +781,8 @@ module.exports.getData = async (req, res) => {
 
         const collectionConfig = project.collections.find(c => c.name === collectionName);
         if (!collectionConfig) {
-return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
-}
+         return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
+        }
 
         const connection = await getConnection(projectId);
         const model = getCompiledModel(
@@ -865,7 +865,7 @@ return res.status(404).json({ success: false, data: {}, message: `Collection ${c
         return res.status(400).json({ success: false, data: {}, message: err.message || "Invalid query filter." });
     }
 };
-
+};
 module.exports.deleteCollection = async (req, res) => {
   try {
     const { projectId, collectionName } = req.params;
