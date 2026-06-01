@@ -22,7 +22,7 @@ const { getConnection } = require("@urbackend/common");
 const { getCompiledModel } = require("@urbackend/common");
 const { QueryEngine } = require("@urbackend/common");
 const { storageRegistry } = require("@urbackend/common");
-const { AppError } = require("@urbackend/common");
+const { AppError, webhookQueue, enqueueCollectionCleanup, syncCollectionCleanup } = require("@urbackend/common");
 const { resolveEffectivePlan } = require("@urbackend/common");
 const {
   deleteProjectByApiKeyCache,
@@ -143,13 +143,6 @@ const getDefaultRlsForCollection = (collectionName, schema = []) => {
 };
 
 const SOCIAL_PROVIDER_KEYS = ["github", "google"];
-
-/**
- * Sanitizes authProviders from a project document for safe API responses.
- * Strips clientSecret fields and replaces them with a boolean hasClientSecret flag.
- * @param {Object} authProviders - Raw authProviders from the project document
- * @returns {Object} Sanitized providers keyed by provider name
- */
 
 const sanitizeAuthProviders = (authProviders = {}) => {
   return SOCIAL_PROVIDER_KEYS.reduce((acc, provider) => {
@@ -339,29 +332,29 @@ module.exports.getAllProject = async (req, res) => {
 
     const projectIds = projects.map(p => p._id);
     const recentLogs = await Log.aggregate([
-      { $match: { projectId: { $in: projectIds } } },
-      { $sort: { timestamp: -1 } },
-      {
-        $group: {
-          _id: "$projectId",
-          logs: { $topN: { n: 100, sortBy: { timestamp: -1 }, output: { status: "$status" } } }
+  { $match: { projectId: { $in: projectIds } } },
+  { $sort: { timestamp: -1 } },
+  {
+    $group: {
+      _id: "$projectId",
+      logs: { $topN: { n: 100, sortBy: { timestamp: -1 }, output: { status: "$status" } } }
+    }
+  },
+  {
+    $project: {
+      errorCount: {
+        $size: {
+          $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } }
         }
       },
-      {
-        $project: {
-          errorCount: {
-            $size: {
-              $filter: { input: "$logs", as: "l", cond: { $gte: ["$$l.status", 400] } }
-            }
-          },
-          successCount: {
-            $size: {
-              $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
-            }
-          }
+      successCount: {
+        $size: {
+          $filter: { input: "$logs", as: "l", cond: { $lt: ["$$l.status", 400] } }
         }
       }
-    ]);
+    }
+  }
+]);
 
     const logsMap = recentLogs.reduce((acc, log) => {
       acc[log._id.toString()] = log;
@@ -432,7 +425,7 @@ module.exports.getSingleProject = async (req, res) => {
 
 module.exports.regenerateApiKey = async (req, res) => {
   try {
-    const { keyType } = req.body; // 'publishable' or 'secret'
+    const { keyType } = req.body;
 
     if (keyType !== "publishable" && keyType !== "secret") {
       return res
@@ -817,20 +810,11 @@ return res.status(404).json({ success: false, data: {}, message: `Collection ${c
             });
         }
 
-         // Strip password from fields query param for users collection
-const safeQuery = { ...req.query };
-if (collectionName === 'users' && safeQuery.fields) {
-    safeQuery.fields = safeQuery.fields
-        .split(',')
-        .filter(f => f.trim().toLowerCase() !== 'password')
-        .join(',');
-}
-
-const features = new QueryEngine(baseQuery, safeQuery)
-    .filter()
-    .sort()
-    .populate()
-    .limitFields();   // fixes: ?populate= and ?expand= now work
+        const features = new QueryEngine(baseQuery, req.query)
+            .filter()
+            .sort()
+            .limitFields()   // fixes: ?fields= and ?meta=false now work
+            .populate();     // fixes: ?populate= and ?expand= now work
 
         // Get total before paginating
         const total = await features.count();
@@ -880,8 +864,6 @@ const features = new QueryEngine(baseQuery, safeQuery)
     if (err?.statusCode === 400 || err?.name === 'QueryFilterError') {
         return res.status(400).json({ success: false, data: {}, message: err.message || "Invalid query filter." });
     }
-    return res.status(500).json({ success: false, data: {}, message: "Failed to fetch data." });
-}
 };
 
 module.exports.deleteCollection = async (req, res) => {
@@ -958,6 +940,10 @@ module.exports.insertData = async (req, res) => {
     return res.status(404).json({ success: false, data: {}, message: `Collection ${collectionName} not found.` });
 }
 
+    // Prevent manual injection of soft-delete fields
+    delete incomingData.isDeleted;
+    delete incomingData.deletedAt;
+
     let docSize = 0;
     if (!project.resources.db.isExternal) {
       docSize = Buffer.byteLength(JSON.stringify(incomingData));
@@ -999,21 +985,30 @@ module.exports.insertData = async (req, res) => {
   }
 };
 
-module.exports.deleteRow = async (req, res) => {
+/**
+ * Soft-deletes a document by setting isDeleted: true and recording the deletion time.
+ * @param {import('express').Request} req - Express request
+ * @param {import('express').Response} res - Express response
+ */
+module.exports.deleteRow = async (req, res, next) => {
   try {
     const { projectId, collectionName, id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return next(new AppError(400, "Invalid document ID format."));
+    }
 
     const project = await Project.findOne({
       _id: projectId,
       owner: req.user._id,
     });
-    if (!project) return res.status(404).json({ error: "Project not found." });
+    if (!project) return next(new AppError(404, "Project not found."));
 
     const collectionConfig = project.collections.find(
       (c) => c.name === collectionName,
     );
     if (!collectionConfig) {
-      return res.status(404).json({ error: "Collection not found." });
+      return next(new AppError(404, "Collection not found."));
     }
 
     const connection = await getConnection(projectId);
@@ -1024,24 +1019,113 @@ module.exports.deleteRow = async (req, res) => {
       project.resources.db.isExternal,
     );
 
-    const docToDelete = await Model.findById(id);
-    if (!docToDelete) {
-      return res.status(404).json({ error: "Document not found." });
+    const result = await Model.findOneAndUpdate(
+      { _id: id, isDeleted: { $ne: true } },
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date()
+        }
+      },
+      { new: false }
+    ).lean();
+
+    if (!result) {
+      return next(new AppError(404, "Document not found."));
     }
 
-    const docSize = Buffer.byteLength(JSON.stringify(docToDelete));
-
-    await Model.deleteOne({ _id: id });
-
-    if (!project.resources.db.isExternal) {
-      project.databaseUsed = Math.max(0, (project.databaseUsed || 0) - docSize);
-      await project.save();
+    // We don't decrement databaseUsed here because the document still occupies space.
+    // It will be decremented during hard delete in the background worker.
+    try {
+      await enqueueCollectionCleanup(projectId, collectionName);
+    } catch (err) {
+      console.error("Failed to enqueue trash cleanup job", { projectId, collectionName, err });
     }
 
-    res.json({ success: true, message: "Document deleted successfully" });
+    res.json({ success: true, data: { id: result._id }, message: "Document moved to trash" });
   } catch (err) {
     console.error("Delete Error:", err);
-    res.status(500).json({ error: err.message });
+    next(new AppError(500, "Failed to delete document"));
+  }
+};
+/**
+ * Recovers a soft-deleted document from trash.
+ * @param {import('express').Request} req - Express request
+ * @param {import('express').Response} res - Express response
+ * @param {import('express').NextFunction} next - Error handler
+ */
+module.exports.recoverRow = async (req, res, next) => {
+  try {
+    const { projectId, collectionName, id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return next(new AppError(400, "Invalid document ID format."));
+    }
+
+    const project = await Project.findOne({
+      _id: projectId,
+      owner: req.user._id,
+    }).lean();
+    if (!project) {
+      return next(new AppError(404, "Project not found."));
+    }
+
+    const collectionConfig = project.collections.find(
+      (c) => c.name === collectionName,
+    );
+    if (!collectionConfig) {
+      return next(new AppError(404, "Collection not found."));
+    }
+
+    const connection = await getConnection(projectId);
+    const Model = getCompiledModel(
+      connection,
+      collectionConfig,
+      projectId,
+      project.resources.db.isExternal,
+    );
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const result = await Model.findOneAndUpdate(
+      { 
+        _id: id, 
+        isDeleted: true,
+        deletedAt: { $gte: thirtyDaysAgo }
+      },
+      { 
+        $set: { 
+          isDeleted: false, 
+          deletedAt: null 
+        } 
+      },
+      { new: true }
+    ).lean();
+
+    if (!result) {
+      return next(new AppError(404, "Document not found or recovery window expired (30 days)."));
+    }
+
+    await webhookQueue.add('trigger-webhook', {
+      projectId: project._id,
+      event: 'document.recovered',
+      collection: collectionName,
+      payload: result
+    }, { removeOnComplete: true });
+
+    try {
+      await syncCollectionCleanup(projectId, collectionName);
+    } catch (err) {
+      console.error("Failed to sync trash cleanup job after recovery", { projectId, collectionName, err });
+    }
+
+    res.json({ success: true, data: result, message: "Document recovered from trash" });
+  } catch (err) {
+    console.error("Recover Error:", err);
+    if (err && err.code === 11000) {
+      return next(new AppError(409, "Cannot restore document: a unique field value conflicts with an existing active document."));
+    }
+    return next(new AppError(500, "Failed to recover document."));
   }
 };
 
@@ -1077,10 +1161,14 @@ module.exports.editRow = async (req, res) => {
       });
     }
 
-    const docToEdit = await Model.findById(id);
+    const docToEdit = await Model.findOne({ _id: id, isDeleted: { $ne: true } });
     if (!docToEdit) {
       return res.status(404).json({ error: "Document not found." });
     }
+
+    // Prevent manual injection of soft-delete fields
+    delete req.body.isDeleted;
+    delete req.body.deletedAt;
 
     const oldSize = Buffer.byteLength(JSON.stringify(docToEdit.toObject()));
 
